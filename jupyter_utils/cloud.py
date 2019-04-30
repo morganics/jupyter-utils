@@ -17,10 +17,9 @@ import inspect
 class CloudTaskRunner:
 
     def __init__(self, func, repo_name, job_queue_arn, job_definition_name,
-                 region, bucket, logger, kms_key=None):
+                 bucket, logger, kms_key=None):
         self._repo_name = repo_name
         self._logger = logger
-        self._region = region
         self._queue = AwsJobQueue(job_queue_arn)
         self._job = None
         self._bucket = bucket
@@ -30,6 +29,7 @@ class CloudTaskRunner:
         self._func = func
         self._sig = inspect.signature(func)
         self._kms_key = kms_key
+        self._kms = aws_tools.KmsArgumentSerializer(self._kms_key, self._logger)
 
     def get_logs(self):
         return self._job.logs()
@@ -41,7 +41,7 @@ class CloudTaskRunner:
             files = list(s3bucket.download_files(td, self._logger, self._unique_id, [".pickle"]))
             assert len(files) > 0, "Expecting a result file stored in S3"
             file_path = files[0]
-            obj = aws_tools.KmsReaderWriter(self._logger, kms_key=self._kms_key).read(file_path)
+            obj = self._kms.deserialize_from_file(file_path)
 
         return obj
 
@@ -55,7 +55,7 @@ class CloudTaskRunner:
 
         for key in [key for key in self._sig.parameters.keys()
                     if self._sig.parameters[key].default == inspect.Parameter.empty]:
-            if key not in kwargs and not (key == "log" or key == "logger"):
+            if key not in kwargs and not (key == "log" or key == "logger" or key == "bucket"):
                 raise ValueError("Expecting {} to be supplied in arg list".format(key))
 
         self._args = kwargs
@@ -63,7 +63,7 @@ class CloudTaskRunner:
     def run(self):
         if self._args is not None:
             s3bucket = aws_tools.get_bucket_client(self._bucket)
-            arg_str = aws_tools.KmsReaderWriter(self._logger, kms_key=self._kms_key).write_to_string(self._args)
+            arg_str = self._kms.serialize(self._args)
             s3bucket.write_string(arg_str, self._unique_id, "pickle.args")
 
         jd = AwsJobDefinition(self._job_definition_name)
@@ -94,33 +94,39 @@ class CloudJob:
 
     FUNC_NAME = "func.pkg"
 
-    def __init__(self, ecr_repo, job_queue, job_definition_name, s3_bucket, logger, region='eu-west-1', kms_key=None):
+    def __init__(self, ecr_repo, job_queue, s3_bucket, logger, kms_key=None):
         self._ecr_repo = ecr_repo
-        self._region = region
         self._logger = logger
         self._job_queue = job_queue
-        self._job_definition_name = job_definition_name
+        #self._job_definition_name = job_definition_name
         self._s3_bucket = s3_bucket
         self._func = None
+        self._kms = aws_tools.KmsArgumentSerializer(kms_key, self._logger)
         self._kms_key = kms_key
 
     def _get_dependencies(self, dependencies):
         import pkg_resources
 
         dists = [d for d in pkg_resources.working_set]
+        #print(dists)
         installed_packages_list = sorted(["%s==%s" % (i.key, i.version)
                                           for i in dists])
+        #print(installed_packages_list)
         if dependencies is not None:
             dependencies.extend(['cloudpickle', 'botocore', 'boto3'])
             installed_packages_list = [dep for dep in installed_packages_list if dep.split("==")[0] in dependencies]
+            installed_packages_list.append("aws-encryption-sdk==1.3.8")
+        #print(installed_packages_list)
 
         return installed_packages_list
 
+    def data(self):
+        return aws_tools.CloudDataSet(aws_tools.get_bucket_client(self._s3_bucket), self._kms, self._logger)
+
     def _login_to_ecr(self, docker_client):
         self._logger.info("Logging in to ECR...")
-        ecr_client = boto3.client('ecr', region_name=self._region)
+        ecr_client = boto3.client('ecr')
         token = ecr_client.get_authorization_token()
-        #self._logger.info(token)
         username, password = base64.b64decode(token['authorizationData'][0]['authorizationToken']).decode().split(':')
         registry = token['authorizationData'][0]['proxyEndpoint']
         self._logger.info("Logging in to Docker client ({}) using auth token...".format(registry))
@@ -131,7 +137,7 @@ class CloudJob:
         self._logger.info("Writing docker file and requirements.txt...")
         DockerFileWriter(deps, self._logger).write(dir)
 
-    def build(self, func, dependencies=None):
+    def build(self, func, dependencies=None, docker_image_name=None):
 
         td = tempfile.TemporaryDirectory()
         curr = os.path.dirname(os.path.abspath(__file__))
@@ -144,7 +150,7 @@ class CloudJob:
         for f in [f for f in os.listdir(curr) if os.path.isfile(os.path.join(curr, f))]:
             shutil.copy(os.path.join(curr, f), os.path.join(td.name, os.path.join(td.name, "jupyter_utils", os.path.basename(f))))
 
-        aws_tools.KmsReaderWriter(self._logger, self._kms_key).write(os.path.join(td.name, "func.pkg"), func)
+        self._kms.serialize_to_file(func, os.path.join(td.name, "func.pkg"))
 
         docker_client = docker.DockerClient(base_url="tcp://127.0.0.1:2375")
         self._logger.info("Connected to local Docker daemon")
@@ -158,7 +164,7 @@ class CloudJob:
                     self._logger.info(line)
 
         os.chdir(cwd)
-        td.cleanup()
+        #td.cleanup()
 
         self._func = func
 
@@ -179,9 +185,9 @@ class CloudJob:
         self._logger.info("Finished submission.")
         return self
 
-    def get_task(self, **kwargs):
-        task = CloudTaskRunner(self._func, self._ecr_repo, self._job_queue, self._job_definition_name,
-                               self._region, self._s3_bucket, self._logger, kms_key=self._kms_key)
+    def get_task(self, job_definition_name, **kwargs):
+        task = CloudTaskRunner(self._func, self._ecr_repo, self._job_queue, job_definition_name,
+                               self._s3_bucket, self._logger, kms_key=self._kms_key)
         task.with_args(**kwargs)
         return task
 
@@ -224,7 +230,7 @@ def _create_client(service_name):
     #    raise ValueError(
     #        "Could not locate AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY or AWS_DEFAULT_REGION in env variables.")
 
-    return boto3.client(service_name, region_name='us-east-1')
+    return boto3.client(service_name)
 
 
 class PeriodicTimer(object):
@@ -290,7 +296,8 @@ class AwsJobPoller:
                     self._logger.warning(e)
 
             for job in finished_jobs:
-                pending_jobs.remove(job)
+                if job in pending_jobs:
+                    pending_jobs.remove(job)
 
             if len(pending_jobs) == 0:
                 break

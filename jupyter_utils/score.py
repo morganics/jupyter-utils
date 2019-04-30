@@ -12,8 +12,10 @@ def show(m, X_train, y_train, X_valid, y_valid):
 def accuracy(m, X_valid, y_valid, callback=None):
     res = sklearn.metrics.confusion_matrix(y_valid, m.predict(X_valid), labels=None,
                                                       sample_weight=None).ravel()
-
-    return {'tn':res[0], 'fp':res[1], 'fn': res[2], 'tp': res[3]}, callback(*res)
+    result = {'tn':res[0], 'fp':res[1], 'fn': res[2], 'tp': res[3]}
+    if hasattr(m, 'oob_score_'):
+        result.update({'oob_score': m.oob_score_})
+    return result, callback(*res)
 
 def recall(tn,fp,fn,tp):
     return true_positive_rate(tn, fp, fn, tp)

@@ -2,7 +2,12 @@ import boto3
 import os
 import boto3.s3.transfer
 import base64, cloudpickle
-
+import aws_encryption_sdk
+import io
+import uuid
+import datetime
+import tempfile
+import logging
 
 def _get_s3_keys(bucket, s3_client):
     """Get a list of keys in an S3 bucket."""
@@ -67,6 +72,34 @@ def copy_file(bucket, source, target):
     return target
 
 
+class CloudDataSet:
+
+    def __init__(self, s3_client:'S3BucketClient', kms_client:'KmsArgumentSerializer', logger:logging.Logger):
+        self._s3_client = s3_client
+        self._kms_client = kms_client
+        self._logger = logger
+        self._cache = {}
+
+    def save(self, **kwargs):
+        unique_id = "data-" + str(uuid.uuid4()) + "-" + datetime.datetime.utcnow().strftime("%d%m%Y-%H%M%S")
+        obj_bytes = self._kms_client.serialize(kwargs)
+        self._s3_client.write_string(obj_bytes, unique_id, "df.pickle")
+        return unique_id
+
+    def read(self, unique_id):
+        self._logger.info("Downloading data cache under {}".format(unique_id))
+        tf = tempfile.TemporaryDirectory()
+        file = list(self._s3_client.download_files(tf.name, self._logger, unique_id))[0]
+        self._cache.update({unique_id: self._kms_client.deserialize_from_file(file)})
+        tf.cleanup()
+
+    def get(self, unique_id, label):
+        if unique_id not in self._cache:
+            self.read(unique_id)
+
+        return self._cache[unique_id][label]
+
+
 class S3BucketClient:
 
     def __init__(self, s3_client, bucket):
@@ -102,13 +135,63 @@ class S3BucketClient:
             if not key.startswith(suffix + "/"):
                 continue
 
-            if not any(key.lower().endswith(ft.lower()) for ft in file_type):
+            if len(file_type) > 0 and not any(key.lower().endswith(ft.lower()) for ft in file_type):
                 continue
 
             path = os.path.join(data_path, os.path.basename(key))
             logger.info("Downloading {}".format(path))
             self._s3_client.download_file(self._bucket, key, path)
             yield path
+
+class KmsArgumentSerializer:
+
+    def __init__(self, kms_key_id, logger):
+        self._kms_key_provider = aws_encryption_sdk.KMSMasterKeyProvider(key_ids=[
+            kms_key_id
+        ])
+        self._logger = logger
+
+    def _stream(self, source, destination, mode):
+        with aws_encryption_sdk.stream(
+                        mode=mode,
+                        source=source,
+                        key_provider=self._kms_key_provider
+                ) as encryptor:
+                    for chunk in encryptor:
+                        destination.write(chunk)
+
+        destination.seek(0)
+        #return destination
+
+    def serialize(self, raw):
+        self._logger.info("Serializing using KMS...")
+        serialized_func = cloudpickle.dumps(raw)
+        with io.BytesIO() as destination:
+            self._stream(io.BytesIO(serialized_func), destination, 'e')
+            d = base64.b64encode(destination.read())
+
+        #self._logger.info(d)
+        return d
+
+    def deserialize(self, encoded):
+        self._logger.info("Deserializing using KMS...")
+        contents = base64.b64decode(encoded)
+        with io.BytesIO() as destination:
+            self._stream(io.BytesIO(contents), destination, 'd')
+            d = destination.read()
+            x = cloudpickle.loads(d)
+            #self._logger.info(str(x))
+            return x
+
+    def serialize_to_file(self, func, filename):
+        with open(filename, 'wb') as fh:
+            response = self.serialize(func)
+            fh.write(response)
+
+    def deserialize_from_file(self, filename):
+        with open(filename, 'rb') as fh:
+            return self.deserialize(fh.read())
+
 
 
 class KmsReaderWriter:
@@ -138,12 +221,8 @@ class KmsReaderWriter:
 
         return encoded_func
 
-    def read(self, filename):
-        self._logger.info("(KMS) Deserializing args...")
-        with open(filename, 'rb') as fh:
-            encoded = fh.read()
-
-        byte_obj = base64.b64decode(encoded)
+    def read_from_string(self, s):
+        byte_obj = base64.b64decode(s)
 
         if self._kms_key is not None:
             kms_client = self._create_kms_client()
@@ -153,6 +232,13 @@ class KmsReaderWriter:
             func = cloudpickle.loads(byte_obj)
 
         return func
+
+    def read(self, filename):
+        self._logger.info("(KMS) Deserializing args...")
+        with open(filename, 'rb') as fh:
+            encoded = fh.read()
+
+        return self.read_from_string(encoded)
 
 
 def get_bucket_client(bucket):

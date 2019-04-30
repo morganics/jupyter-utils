@@ -39,17 +39,20 @@ def main():
     logger.info("Starting processing...")
 
     args = create_parser().parse_args(sys.argv[1:])
+
+
     os.environ.update({'AWS_ACCESS_KEY_ID': args.aws_access_key_id,
                        'AWS_SECRET_ACCESS_KEY': args.aws_secret_access_key,
                        'AWS_DEFAULT_REGION': args.aws_default_region})
+
+    kms = jupyter_utils.aws_tools.KmsArgumentSerializer(args.kms_key, logger)
 
     bucket = args.bucket_name
     job_id = args.job_id
 
     s3bucket = jupyter_utils.aws_tools.get_bucket_client(bucket)
 
-    kms = jupyter_utils.aws_tools.KmsReaderWriter(logger, kms_key=args.kms_key)
-    method = kms.read("./func.pkg")
+    method = kms.deserialize_from_file("./func.pkg")
 
     sig = inspect.signature(method)
     result = None
@@ -57,9 +60,14 @@ def main():
         # need to get these from s3.
         with tempfile.TemporaryDirectory() as td:
             a = list(s3bucket.download_files(td, logger, job_id, ["pickle.args"]))[0]
-            arg_list = kms.read(a)
+            arg_list = kms.deserialize_from_file(a)
 
-        result = method(logger, **arg_list)
+        if "bucket" in sig.parameters.keys():
+            result = method(logger, bucket=jupyter_utils.aws_tools.CloudDataSet(s3bucket, kms, logger),
+                            **arg_list)
+        else:
+            result = method(logger, **arg_list)
+
     elif(len(sig.parameters.keys() == 1)):
         result = method(logger)
     else:
@@ -68,7 +76,7 @@ def main():
     logger.info("Finished processing.")
 
     ntf = tempfile.NamedTemporaryFile(delete=False)
-    kms.write(ntf.name, result)
+    kms.serialize_to_file(result, ntf.name)
     s3bucket.write_file(ntf.name, job_id, "result.pickle")
     logger.info("Written result to {}".format(job_id))
 
