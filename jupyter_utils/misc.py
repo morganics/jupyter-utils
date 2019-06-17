@@ -1,10 +1,10 @@
 import logging
 _logger = None
-def create_logger():
+def create_logger(level=logging.INFO):
     global _logger
     if _logger is None:
         logger = logging.getLogger(__name__)
-        logger.setLevel(logging.INFO)
+        logger.setLevel(level)
 
         handler = logging.StreamHandler()
         logger.addHandler(handler)

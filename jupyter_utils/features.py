@@ -3,7 +3,6 @@ import numpy as np
 import pandas as pd
 
 
-
 def remove_variable_variables(df: pd.DataFrame):
     column_names = df.select_dtypes(include=['object', 'categorical']).apply(lambda x: len(x.unique()) != len(df))
     return df[column_names[column_names == True].index.tolist()].copy()

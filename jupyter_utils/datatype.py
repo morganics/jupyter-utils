@@ -43,3 +43,7 @@ def get_categorical(df):
 
 def get_continuous(df):
     return df[[col for col in df.columns if is_float(df[col].dtype)]]
+
+
+def get_bool(df):
+    return df.select_dtypes(['bool'])

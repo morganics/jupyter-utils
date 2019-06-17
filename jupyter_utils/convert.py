@@ -28,16 +28,27 @@ def _coerce_to_numeric(col, cutoff, logger, ignore=list()):
     pre_length = len(values)
 
     if pre_length > 0:
-        new_values = pd.to_numeric(col.dropna().unique(), errors='coerce')
+        new_values = pd.to_numeric(values, errors='coerce')
         post_length = len(new_values[~np.isnan(new_values)])
         ratio = (pre_length - post_length) / pre_length
 
     if ratio <= cutoff:
-        logger.debug("Converting column {} to numeric (ratio: {})".format(col, ratio))
+        logger.info("Converting column {} to numeric (ratio: {})".format(col, ratio))
         return pd.to_numeric(col, errors='coerce')
     else:
         logger.debug("Not converting column {} (ratio: {})".format(col, ratio))
         return col
+
+
+def to_bool(df):
+    new_df = df.copy()
+    for series in get_continuous(new_df).columns:
+        min = new_df[series].min()
+        max = new_df[series].max()
+        if min == 0 and max == 1:
+            new_df[series] = new_df[series].astype(bool)
+
+    return new_df
 
 
 def coerce_to_numeric(df, logger, cutoff=0.10, ignore=list()) -> pd.DataFrame:

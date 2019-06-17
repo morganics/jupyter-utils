@@ -3,6 +3,7 @@ from pandas.api.types import is_string_dtype, is_numeric_dtype
 import logging
 import bayesianpy
 import numpy as np
+import jupyter_utils.datatype as datatype
 
 def find(df: pd.DataFrame):
     return (df.isnull().sum().sort_index() / len(df)).sort_values(ascending=False)
@@ -12,23 +13,29 @@ def drop(df: pd.DataFrame):
     x = find(df) == 1
     return df.drop(x.index, axis=1)
 
+def mark_continuous(df):
+    new_df = df.copy()
+    for col in datatype.get_continuous(new_df).columns:
+        col_is_missing = pd.isnull(new_df[col])
+        if any(col_is_missing == True):
+            new_df["{}_missing".format(col)] = col_is_missing
 
+    return new_df
 
 
 class Impute:
-    def __init__(self):
-        pass
-
-    def fill_missing_cols(self):
-        pass
-
-
-class MedianImpute(Impute):
-    def __init__(self, df: pd.DataFrame, logger: logging.Logger):
+    def __init__(self, df: pd.DataFrame, logger: logging.Logger, mode='zerofill'):
         super().__init__()
         self._df = df
         self._missing_indices = {}
         self._logger = logger
+        self._mode = mode
+
+        self._actions = {'zerofill': lambda _df, _col: _df[_col].fillna(0),
+                         'median': lambda _df, _col: _df[_col].fillna(_df[_col].median())}
+
+        if mode not in self._actions:
+            raise ValueError("Expecting one of {} for mode".format(", ".join(self._actions.keys())))
 
     def fill_continuous(self, create_missing_cols=True):
         df = self._df.copy()
@@ -40,7 +47,7 @@ class MedianImpute(Impute):
                         df["{}_missing".format(col)] = col_is_missing
 
                 if pd.isnull(df[col]).sum():
-                    df[col] = df[col].fillna(df[col].median())
+                    df[col] = self._actions[self._mode](df, col)
 
         return df
 
