@@ -29,7 +29,7 @@ partd==0.3.9
 pathos==0.2.2.1
 pox==0.2.4
 ppft==1.6.4.8
-psutil==5.4.8
+psutil==5.6.6
 pycparser==2.19
 pyOpenSSL==19.0.0
 pypiwin32==223
