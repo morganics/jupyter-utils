@@ -37,7 +37,7 @@ pyreadline==2.1
 PySocks==1.6.8
 python-dateutil==2.7.5
 pytz==2018.9
-pywin32==224
+pywin32==301
 PyYAML==5.1
 requests==2.21.0
 s3transfer==0.2.0
