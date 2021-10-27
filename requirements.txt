@@ -8,7 +8,7 @@ chardet==3.0.4
 Click==7.0
 cloudpickle==0.6.1
 cryptography==2.6.1
-dask==0.18.0
+dask==2021.10.0
 dill==0.2.8.2
 distributed==1.25.2
 docker==3.7.2
