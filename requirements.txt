@@ -23,7 +23,7 @@ mkl-fft==1.0.10
 mkl-random==1.0.2
 msgpack==0.6.0
 multiprocess==0.70.6.1
-numpy==1.15.4
+numpy==1.22.0
 pandas==0.23.4
 partd==0.3.9
 pathos==0.2.2.1
