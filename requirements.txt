@@ -10,7 +10,7 @@ cloudpickle==0.6.1
 cryptography==2.6.1
 dask==0.18.0
 dill==0.2.8.2
-distributed==1.25.2
+distributed==2021.10.0
 docker==3.7.2
 docker-pycreds==0.4.0
 docutils==0.14
